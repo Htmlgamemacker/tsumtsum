@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ツムツム風ゲーム — バウンド修正版</title>
+<style>
+  :root{ --ui-width:360px; }
+  body{
+    margin:0; font-family:"Segoe UI",system-ui,-apple-system,"Hiragino Kaku Gothic ProN","メイリオ",sans-serif;
+    background: linear-gradient(#b2ebf2,#80deea);
+    display:flex; flex-direction:column; align-items:center; height:100vh; overflow:hidden;
+  }
+  #charSelect{ display:flex; gap:20px; margin-top:48px; }
+  .charBtn{ width:92px;height:92px;border-radius:12px;border:2px solid #333; display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:18px;color:#fff;cursor:pointer; user-select:none; }
+  .mickey{ background:#f44336; } /* 赤 */
+  .elsa{ background:#2196f3; }   /* 青 */
+  .stitch{ background:#ffeb3b; color:#333; } /* 黄 */
+
+  #ui{ width:var(--ui-width); text-align:center; display:none; margin-top:10px; }
+  #score,#combo,#time{ font-weight:700; font-size:18px; margin:6px 0; color:#222; text-shadow:0 1px 0 rgba(255,255,255,0.3); }
+  #bars{ display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .barWrap{ width:300px; height:26px; background:#ddd; border-radius:14px; overflow:hidden; }
+  .bar{ height:100%; width:0%; transition:width .18s linear; }
+  #skillBar{ background:#ff9800; }
+  #feverBar{ background:#ffd54f; }
+
+  #skillBtn{ margin-top:6px; padding:10px 18px; border-radius:12px; border:none; background:#2196f3; color:#fff; cursor:pointer; font-weight:700; }
+  #skillBtn:disabled{ background:#999; cursor:not-allowed; }
+
+  .ready-pulse{ animation: readyPulse 0.9s infinite; box-shadow:0 0 18px rgba(255,200,40,0.9),0 0 6px rgba(255,200,40,0.6) inset; transform:scale(1.03); }
+  @keyframes readyPulse{ 0%{ transform:scale(1); }50%{ transform:scale(1.06); }100%{ transform:scale(1); } }
+
+  canvas{ display:none; margin-top:8px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,0.18); background:#fff; touch-action:none; }
+
+  #overlay{ position:fixed; inset:0; pointer-events:none; opacity:0; transition:opacity .18s; mix-blend-mode:screen; }
+  .fever-ui{ filter: drop-shadow(0 0 12px rgba(255,200,40,0.9)); transform: scale(1.02); transition:transform .15s; }
+
+  #resultScreen{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.5); }
+  #resultBox{ width:320px; background:#fff; border-radius:16px; padding:18px; text-align:center; box-shadow:0 12px 30px rgba(0,0,0,0.3); }
+  #restartBtn{ margin-top:12px; padding:10px 16px; border-radius:12px; border:none; background:#4caf50; color:#fff; font-weight:700; cursor:pointer; }
+</style>
+</head>
+<body>
+
+<!-- キャラ選択（表示名で分かりやすく） -->
+<div id="charSelect">
+  <div class="charBtn mickey" data-char="mickey">ミッキー<br><small>（赤）</small></div>
+  <div class="charBtn elsa" data-char="elsa">エルサ<br><small>（青）</small></div>
+  <div class="charBtn stitch" data-char="stitch">スティッチ<br><small>（黄）</small></div>
+</div>
+
+<!-- UI -->
+<div id="ui">
+  <div id="score">スコア: 0</div>
+  <div id="combo">コンボ: 0</div>
+  <div id="time">残り: 60秒</div>
+  <div id="bars">
+    <div class="barWrap"><div id="skillBar" class="bar"></div></div>
+    <div class="barWrap"><div id="feverBar" class="bar"></div></div>
+  </div>
+  <button id="skillBtn" disabled>スキル発動</button>
+</div>
+
+<canvas id="game" width="360" height="540"></canvas>
+<div id="overlay"></div>
+
+<!-- 結果 -->
+<div id="resultScreen">
+  <div id="resultBox">
+    <h2>ゲーム終了！</h2>
+    <p id="finalScore">スコア: 0</p>
+    <p id="bestScore">ハイスコア: 0</p>
+    <p id="bestCombo">最長コンボ: 0</p>
+    <button id="restartBtn">もう一度遊ぶ</button>
+  </div>
+</div>
+
+<!-- サウンド（外部URL） -->
+<audio id="bgm" loop src="https://freesound.org/data/previews/341/341695_6241250-lq.mp3"></audio>
+<audio id="feverBgm" loop src="https://freesound.org/data/previews/331/331912_3248244-lq.mp3"></audio>
+<audio id="popSound" src="https://freesound.org/data/previews/276/276020_5121236-lq.mp3"></audio>
+<audio id="bombSound" src="https://freesound.org/data/previews/146/146725_2530050-lq.mp3"></audio>
+<audio id="skillSound" src="https://freesound.org/data/previews/331/331912_3248244-lq.mp3"></audio>
+<audio id="feverSound" src="https://freesound.org/data/previews/331/331912_3248244-lq.mp3"></audio>
+<audio id="explosionSound" src="https://freesound.org/data/previews/235/235968_3981360-lq.mp3"></audio>
+
+<script>
+/* ------------------------------
+   基本設定（前バージョンを踏襲）
+   ------------------------------ */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+
+const cols = 6, rows = 8, SIZE = 60;
+const COLORS = ["#f44336","#2196f3","#ffeb3b","#4caf50","#9c27b0"];
+
+let tsums = []; // grid cells
+let selected = [];
+let isDragging = false;
+
+let score = 0, combo = 0, maxCombo = 0;
+let skillGauge = 0;
+let timeLeft = 60;
+let fever = false;
+let running = false;
+
+let timerId = null, loopReq = null;
+let selectedChar = null;
+
+/* UI elems */
+const scoreEl = document.getElementById("score");
+const comboEl = document.getElementById("combo");
+const timeEl = document.getElementById("time");
+const skillBar = document.getElementById("skillBar");
+const feverBar = document.getElementById("feverBar");
+const skillBtn = document.getElementById("skillBtn");
+const resultScreen = document.getElementById("resultScreen");
+const finalScoreEl = document.getElementById("finalScore");
+const bestScoreEl = document.getElementById("bestScore");
+const bestComboEl = document.getElementById("bestCombo");
+const restartBtn = document.getElementById("restartBtn");
+
+/* Audio */
+const bgm = document.getElementById("bgm");
+const feverBgm = document.getElementById("feverBgm");
+const popSound = document.getElementById("popSound");
+const bombSound = document.getElementById("bombSound");
+const skillSound = document.getElementById("skillSound");
+const feverSound = document.getElementById("feverSound");
+const explosionSound = document.getElementById("explosionSound");
+
+/* visual popups */
+let scorePopups = [];   // {x,y,text,alpha,vy}
+let comboPopups = [];   // {x,y,text,alpha,vy}
+
+/* storage keys */
+const HIGH_SCORE_KEY = "tsum_high_score_v4";
+const HIGH_COMBO_KEY = "tsum_high_combo_v4";
+
+/* ------------------------------
+   初期化
+   ------------------------------ */
+function newTsum(color, x, y, isBomb=false){
+  return { color, x, y, targetY: y, isBomb: !!isBomb, scale:1, bounced:false, pulsePhase: Math.random()*Math.PI*2 };
+}
+
+function initGrid(){
+  tsums = [];
+  for(let r=0;r<rows;r++){
+    tsums[r] = [];
+    for(let c=0;c<cols;c++){
+      const color = COLORS[Math.floor(Math.random()*COLORS.length)];
+      tsums[r][c] = newTsum(color, c*SIZE, r*SIZE);
+    }
+  }
+  canvas.width = cols * SIZE;
+  canvas.height = rows * SIZE;
+}
+
+/* キャラ選択 */
+document.querySelectorAll(".charBtn").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    selectedChar = btn.dataset.char;
+    document.getElementById("charSelect").style.display = "none";
+    document.getElementById("ui").style.display = "block";
+    canvas.style.display = "block";
+    startGame();
+  });
+});
+
+/* ------------------------------
+   start / end / restart
+   ------------------------------ */
+function startGame(){
+  score = 0; combo = 0; maxCombo = 0; skillGauge = 0; timeLeft = 60; fever = false;
+  scoreEl.textContent = "スコア: 0"; comboEl.textContent = "コンボ: 0"; timeEl.textContent = "残り: 60秒";
+  skillBar.style.width = "0%"; feverBar.style.width = "0%"; skillBtn.disabled = true; skillBtn.classList.remove("ready-pulse");
+  initGrid();
+  running = true;
+  try{ bgm.volume = 0.28; bgm.play(); } catch(e){}
+  startTimer();
+  loop();
+}
+
+function endGame(){
+  running = false;
+  if(timerId){ clearInterval(timerId); timerId = null; }
+  if(loopReq) cancelAnimationFrame(loopReq);
+  try{ bgm.pause(); bgm.currentTime = 0; feverBgm.pause(); feverBgm.currentTime = 0; } catch(e){}
+  const best = parseInt(localStorage.getItem(HIGH_SCORE_KEY) || "0", 10);
+  const bestComboStored = parseInt(localStorage.getItem(HIGH_COMBO_KEY) || "0", 10);
+  if(score > best) localStorage.setItem(HIGH_SCORE_KEY, String(score));
+  if(maxCombo > bestComboStored) localStorage.setItem(HIGH_COMBO_KEY, String(maxCombo));
+  finalScoreEl.textContent = "スコア: " + score;
+  bestScoreEl.textContent = "ハイスコア: " + (localStorage.getItem(HIGH_SCORE_KEY) || score);
+  bestComboEl.textContent = "最長コンボ: " + (localStorage.getItem(HIGH_COMBO_KEY) || maxCombo);
+  resultScreen.style.display = "flex";
+}
+
+restartBtn.addEventListener("click", ()=>{
+  resultScreen.style.display = "none";
+  document.getElementById("charSelect").style.display = "flex";
+  document.getElementById("ui").style.display = "none";
+  canvas.style.display = "none";
+});
+
+/* ------------------------------
+   timer
+   ------------------------------ */
+function startTimer(){
+  if(timerId) clearInterval(timerId);
+  timerId = setInterval(()=>{
+    if(!running){ clearInterval(timerId); return; }
+    if(timeLeft > 0){
+      timeLeft--;
+      timeEl.textContent = "残り: " + timeLeft + "秒";
+      if(timeLeft <= 0){
+        clearInterval(timerId);
+        endGame();
+      }
+    }
+  }, 1000);
+}
+
+/* ------------------------------
+   input (pointer)
+   ------------------------------ */
+canvas.addEventListener("pointerdown", e => { if(!running) return; const p = getPos(e); startSelect(p); });
+canvas.addEventListener("pointermove", e => { if(!running) return; if(isDragging){ const p = getPos(e); moveSelect(p); }});
+canvas.addEventListener("pointerup", e => { if(!running) return; const p = getPos(e); endSelect(p); });
+
+function getPos(e){
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+/* ------------------------------
+   selection (diagonals allowed)
+   ------------------------------ */
+function findTsumAtPos(p){
+  const c = Math.floor(p.x / SIZE);
+  const r = Math.floor(p.y / SIZE);
+  if(r >= 0 && r < rows && c >= 0 && c < cols) return { r, c, tsum: tsums[r][c] };
+  return null;
+}
+
+function startSelect(p){
+  const t = findTsumAtPos(p);
+  if(!t || t.tsum.isBomb) return;
+  isDragging = true;
+  selected = [{ r: t.r, c: t.c }];
+}
+
+function moveSelect(p){
+  const t = findTsumAtPos(p);
+  if(!t) return;
+  const last = selected[selected.length - 1];
+  if(t.r === last.r && t.c === last.c) return;
+  const lastT = tsums[last.r][last.c];
+  const nowT = t.tsum;
+  if(!nowT || nowT.isBomb) return;
+  const dr = Math.abs(t.r - last.r), dc = Math.abs(t.c - last.c);
+  if(nowT.color === lastT.color && dr <= 1 && dc <= 1){
+    if(!selected.some(s => s.r === t.r && s.c === t.c)){
+      selected.push({ r: t.r, c: t.c });
+    }
+  }
+}
+
+/* endSelect: successful selection -> popSelected; unsuccessful -> tap bomb */
+function endSelect(pos){
+  isDragging = false;
+  if(selected.length >= 3){
+    popSelected();
+    selected = [];
+  } else {
+    const t = findTsumAtPos(pos);
+    if(t && t.tsum && t.tsum.isBomb){
+      explodeBomb(t.r, t.c);
+    }
+    selected = [];
+  }
+}
+
+/* ------------------------------
+   pop (remove) + popups
+   ------------------------------ */
+function popSelected(){
+  const feverMult = fever ? 1.5 : 1.0;
+  const points = Math.floor(selected.length * 100 * (combo + 1) * feverMult);
+
+  // average position for popup
+  const avg = selected.reduce((acc, p)=>{ acc.x += p.c * SIZE + SIZE/2; acc.y += p.r * SIZE + SIZE/2; return acc; }, {x:0,y:0});
+  avg.x /= selected.length; avg.y /= selected.length;
+  scorePopups.push({ x: avg.x, y: avg.y, text: "+" + points, alpha: 1, vy: -1.6 });
+
+  try{ popSound.currentTime = 0; popSound.play(); } catch(e){}
+
+  score += points;
+  combo++;
+  if(combo > maxCombo) maxCombo = combo;
+  scoreEl.textContent = "スコア: " + score;
+  comboEl.textContent = "コンボ: " + combo;
+
+  // combo popup center
+  comboPopups.push({ x: canvas.width/2, y: canvas.height/2 - 20, text: combo + " COMBO!!", alpha: 1, vy: -1.2 });
+
+  // skill gauge increases only when removing selectedChar color (unless fever)
+  if(!fever){
+    let gaugeIncrease = 0;
+    for(const p of selected){
+      const t = tsums[p.r][p.c];
+      if(t && t.color === selectedCharColor()) gaugeIncrease += 10;
+    }
+    skillGauge = Math.min(100, skillGauge + gaugeIncrease);
+    skillBar.style.width = skillGauge + "%";
+    if(skillGauge >= 100){
+      skillBtn.disabled = false;
+      skillBtn.classList.add("ready-pulse");
+    }
+  }
+
+  // bomb creation
+  let bombIdx = -1;
+  if(selected.length >= 7){
+    bombIdx = Math.floor(Math.random() * selected.length);
+    const bp = selected[bombIdx];
+    if(tsums[bp.r] && tsums[bp.r][bp.c]) tsums[bp.r][bp.c].isBomb = true;
+  }
+
+  // remove others
+  for(let i=0;i<selected.length;i++){
+    if(i === bombIdx) continue;
+    const p = selected[i];
+    if(tsums[p.r]) tsums[p.r][p.c] = null;
+  }
+
+  applyGravity();
+
+  clearTimeout(popSelected.comboTimer);
+  popSelected.comboTimer = setTimeout(()=>{
+    combo = 0;
+    comboEl.textContent = "コンボ: 0";
+  }, 2000);
+
+  // fever auto-start at combo >= 10 (強化)
+  if(combo >= 10 && !fever) startFever();
+}
+
+/* helper for selected char color mapping */
+function selectedCharColor(){
+  if(selectedChar === "mickey") return "#f44336";
+  if(selectedChar === "elsa") return "#2196f3";
+  if(selectedChar === "stitch") return "#ffeb3b";
+  return null;
+}
+
+/* ------------------------------
+   bomb explosion
+   ------------------------------ */
+function explodeBomb(r0,c0){
+  try{ bombSound.currentTime = 0; bombSound.play(); } catch(e){}
+  for(let r=r0-1;r<=r0+1;r++){
+    for(let c=c0-1;c<=c0+1;c++){
+      if(r>=0 && r<rows && c>=0 && c<cols) tsums[r][c] = null;
+    }
+  }
+  tsums[r0][c0] = newTsum(COLORS[Math.floor(Math.random()*COLORS.length)], c0*SIZE, -SIZE);
+  applyGravity();
+}
+
+/* ------------------------------
+   gravity (drop)
+   ------------------------------ */
+function applyGravity(){
+  for(let c=0;c<cols;c++){
+    const stack = [];
+    for(let r=rows-1;r>=0;r--){
+      if(tsums[r][c]) stack.push(tsums[r][c]);
+    }
+    for(let r=rows-1;r>=0;r--){
+      if(stack.length > 0){
+        const t = stack.shift();
+        t.targetY = r * SIZE;
+        // reset bounced flag so landing effect triggers only when falling from distance
+        // set to false only if the distance to new target is reasonably large to allow next bounce naturally
+        t.bounced = false;
+        tsums[r][c] = t;
+      } else {
+        const color = COLORS[Math.floor(Math.random()*COLORS.length)];
+        const t = newTsum(color, c*SIZE, -SIZE);
+        t.targetY = r * SIZE;
+        tsums[r][c] = t;
+      }
+    }
+  }
+}
+
+/* ------------------------------
+   skill button and skill effects (キャラ別)
+   ------------------------------ */
+skillBtn.addEventListener("click", ()=>{
+  if(!running) return;
+  if(skillGauge < 100 && !fever) return;
+  if(!fever) skillGauge = 0;
+  skillBar.style.width = "0%";
+  skillBtn.disabled = true;
+  skillBtn.classList.remove("ready-pulse");
+  try{ skillSound.currentTime = 0; skillSound.play(); } catch(e){}
+  skillEffect(selectedChar);
+  applyGravity();
+});
+
+function skillEffect(char){
+  if(char === "mickey"){
+    const centerCol = Math.floor(cols/2);
+    const centerRow = Math.floor(rows/2);
+    for(let r=centerRow-1;r<=centerRow+1;r++){
+      for(let c=centerCol-1;c<=centerCol+1;c++){
+        if(r>=0 && r<rows && c>=0 && c<cols){ tsums[r][c] = null; }
+      }
+    }
+    flashOverlay("rgba(255,255,255,0.85)", 380);
+    try{ explosionSound.currentTime=0; explosionSound.play(); }catch(e){}
+  } else if(char === "elsa"){
+    const row = Math.floor(Math.random()*rows);
+    for(let c=0;c<cols;c++) tsums[row][c] = null;
+    flashOverlay("rgba(180,230,255,0.8)", 480);
+    try{ skillSound.currentTime=0; skillSound.play(); }catch(e){}
+  } else if(char === "stitch"){
+    for(let i=0;i<3;i++){
+      setTimeout(()=>{
+        const r = Math.floor(Math.random()*rows);
+        const c = Math.floor(Math.random()*cols);
+        for(let rr=r-1;rr<=r+1;rr++) for(let cc=c-1;cc<=c+1;cc++) if(rr>=0 && rr<rows && cc>=0 && cc<cols) tsums[rr][cc] = null;
+        flashOverlay("rgba(200,230,255,0.2)", 150);
+        try{ explosionSound.currentTime=0; explosionSound.play(); }catch(e){}
+        applyGravity();
+      }, i * 180);
+    }
+  }
+}
+
+function flashOverlay(color, dur){
+  overlay.style.background = color;
+  overlay.style.opacity = 1;
+  setTimeout(()=> overlay.style.opacity = 0, dur);
+}
+
+/* ------------------------------
+   fever: visuals & audio
+   ------------------------------ */
+function startFever(){
+  if(fever) return;
+  fever = true;
+  try{
+    feverSound.currentTime = 0; feverSound.play();
+    bgm.pause();
+    feverBgm.volume = 0.5; feverBgm.currentTime = 0; feverBgm.play();
+  } catch(e){}
+  document.getElementById("ui").classList.add("fever-ui");
+  overlay.style.background = "rgba(255,220,120,0.18)";
+  overlay.style.opacity = 1;
+  feverBar.style.width = "100%";
+  let fTime = 10;
+  const fInt = setInterval(()=>{
+    if(!running){ clearInterval(fInt); return; }
+    fTime--;
+    feverBar.style.width = (fTime/10*100) + "%";
+    if(fTime <= 0){
+      clearInterval(fInt);
+      endFever();
+    }
+  }, 1000);
+}
+
+function endFever(){
+  fever = false;
+  try{ feverBgm.pause(); feverBgm.currentTime = 0; bgm.volume = 0.28; bgm.play(); } catch(e){}
+  document.getElementById("ui").classList.remove("fever-ui");
+  overlay.style.opacity = 0;
+  feverBar.style.width = "0%";
+}
+
+/* ------------------------------
+   popups update
+   ------------------------------ */
+function updatePopups(){
+  for(let i = scorePopups.length - 1; i >= 0; i--){
+    const p = scorePopups[i];
+    p.y += p.vy; p.vy += -0.02; p.alpha -= 0.03;
+    if(p.alpha <= 0) scorePopups.splice(i,1);
+  }
+  for(let i = comboPopups.length - 1; i >= 0; i--){
+    const p = comboPopups[i];
+    p.y += p.vy; p.vy += -0.02; p.alpha -= 0.03;
+    if(p.alpha <= 0) comboPopups.splice(i,1);
+  }
+}
+
+/* ------------------------------
+   update: falling, bounce, bomb pulse, ui checks
+   ------------------------------ */
+let globalTime = 0;
+function update(){
+  globalTime += 0.016;
+  const baseLerp = 0.20;
+  const lerp = fever ? Math.min(0.36, baseLerp * 1.3) : baseLerp; // fever: ~1.3x
+
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const t = tsums[r][c];
+      if(!t) continue;
+
+      // smooth fall using t.y (as canonical)
+      t.y += (t.targetY - t.y) * lerp;
+
+      // --- 修正版：バウンド制御の安定化 ---
+      // 初回バウンド発生条件（落下してほぼ着地、かつまだバウンドしていない）
+      if (!t.bounced && Math.abs(t.targetY - t.y) < 1) {
+        t.bounced = true;           // mark bounced so it won't retrigger immediately
+        t.scale = 1.18;             // start pop scale
+        t._bounceVy = -0.06;        // shrink velocity (will bring scale down towards 1)
+      }
+
+      // 継続するバウンド（スケールが1に戻るまで処理）
+      if (t.scale && t.scale !== 1) {
+        t.scale += t._bounceVy || 0;
+        // 減衰率を 0.93 にして、やや長めの弾み感に
+        t._bounceVy = (t._bounceVy || 0) * 0.93;
+        if (t.scale <= 1.0) {
+          t.scale = 1.0;
+          t._bounceVy = 0;
+          // NOTE: don't immediately reset t.bounced to false here —
+          // reset only when the tsum moves away from its target by enough
+        }
+      }
+
+      // 再びバウンド可能にする閾値：target と現在位置の差が十分に大きくなったら再度バウンドを許可
+      // （新しい落下が始まった時のみ再収縮させるため）
+      if (Math.abs(t.targetY - t.y) > 3) {
+        t.bounced = false;
+      }
+
+      // bomb pulse
+      if(t.isBomb){
+        t.pulsePhase += 0.12;
+      }
+    }
+  }
+
+  updatePopups();
+
+  // main-loop based skill button visual check
+  if(skillGauge >= 100){
+    if(skillBtn.disabled) skillBtn.disabled = false;
+    if(!skillBtn.classList.contains("ready-pulse")) skillBtn.classList.add("ready-pulse");
+  } else {
+    if(skillBtn.classList.contains("ready-pulse")) skillBtn.classList.remove("ready-pulse");
+  }
+}
+
+/* ------------------------------
+   draw: grid, bombs, popups, combo with stroke
+   ------------------------------ */
+function draw(){
+  // background change during fever
+  if(fever){
+    const g = ctx.createLinearGradient(0,0,0,canvas.height);
+    g.addColorStop(0,"#fff7e0");
+    g.addColorStop(1,"#fff0c0");
+    ctx.fillStyle = g;
+  } else {
+    ctx.fillStyle = "#ffffff";
+  }
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // draw grid
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const t = tsums[r][c];
+      if(!t) continue;
+      const cx = t.x + SIZE/2;
+      const cy = t.y + SIZE/2;
+      const bombPulse = t.isBomb ? (1 + 0.06 * Math.sin(t.pulsePhase)) : 1.0;
+      const drawScale = (t.scale || 1) * bombPulse;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(drawScale, drawScale);
+      ctx.beginPath();
+      ctx.arc(0,0,SIZE/2.5,0,Math.PI*2);
+      ctx.fillStyle = t.isBomb ? "#555" : t.color;
+      ctx.fill();
+
+      if(t.isBomb){
+        ctx.fillStyle = "#fff";
+        ctx.font = "18px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("💣", 0, 0);
+      }
+
+      if(selected.some(s => s.r === r && s.c === c)){
+        ctx.lineWidth = 5; ctx.strokeStyle = "#fff"; ctx.stroke();
+      }
+      ctx.restore();
+
+      if(t.isBomb){
+        const phase = 0.5 + 0.5 * Math.sin(t.pulsePhase);
+        ctx.beginPath();
+        ctx.arc(cx, cy, (SIZE/2.5) * (1.15 + 0.25 * phase), 0, Math.PI*2);
+        ctx.strokeStyle = `rgba(255,255,255,${0.08 + 0.12 * phase})`;
+        ctx.lineWidth = 6;
+        ctx.stroke();
+      }
+    }
+  }
+
+  // score popups
+  for(const p of scorePopups){
+    ctx.globalAlpha = Math.max(0, p.alpha);
+    ctx.fillStyle = fever ? "#ffd54f" : "#fff";
+    ctx.font = "bold 16px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(p.text, p.x, p.y);
+    ctx.globalAlpha = 1;
+  }
+
+  // combo popups - with stroke for contrast
+  for(const p of comboPopups){
+    ctx.globalAlpha = Math.max(0, p.alpha);
+    ctx.font = "bold 28px sans-serif";
+    ctx.textAlign = "center";
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#000";
+    ctx.strokeText(p.text, p.x, p.y);
+    ctx.fillStyle = fever ? "#ffb300" : "#ffea00";
+    ctx.fillText(p.text, p.x, p.y);
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ------------------------------
+   main loop
+   ------------------------------ */
+function loop(){
+  if(!running) return;
+  update();
+  draw();
+  loopReq = requestAnimationFrame(loop);
+}
+
+/* ------------------------------
+   utilities & start
+   ------------------------------ */
+function selectedCharColor(){
+  if(selectedChar === "mickey") return "#f44336";
+  if(selectedChar === "elsa") return "#2196f3";
+  if(selectedChar === "stitch") return "#ffeb3b";
+  return null;
+}
+
+document.addEventListener("visibilitychange", ()=>{
+  if(document.hidden){
+    try{ bgm.pause(); feverBgm.pause(); } catch(e){}
+  } else {
+    if(running && !fever){ try{ bgm.play(); } catch(e){} }
+  }
+});
+document.addEventListener('touchmove', (e)=>{ if(isDragging) e.preventDefault(); }, { passive:false });
+
+/* initialize grid but don't auto-start until char chosen */
+initGrid();
+
+</script>
+</body>
+</html>
